@@ -1,0 +1,8 @@
+data:
+    name: hitgraphs
+    input_hitsgraph_dir: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/outputs/hitgraphs_big_000
+    output_nxgraph_dir:  /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/outputs/nxgraphs_bigs_001
+    input_evt_dir: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/inputs/train_all
+    log_name: data_process.log
+    n_tasks: 1
+    n_workers: 68

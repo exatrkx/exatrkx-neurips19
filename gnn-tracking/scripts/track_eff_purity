@@ -1,0 +1,70 @@
+#!/usr/bin/env python
+"""Compute **track** efficiency of cut-based edge selections.
+Track efficiency is defined as:
+	* X = number of reconstrcted tracked based on truth info to a true track having at least 3 hits
+	* Y = number of true tracks having at least 3 hits
+	* \epsilon =  X / Y
+The efficiency is calculated as a function the track pT.
+"""
+
+import os
+import argparse
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import multiprocessing as mp
+from functools import partial
+
+
+from heptrkx.utils import load_yaml, list_from_str, select_pair_layers
+from heptrkx.studies import track_eff_of_edge_selected
+from heptrkx.nx_graph.utils_plot import plot_ratio
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='Efficiency of edge selections for different layer pairs')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+    add_arg('--outname', help='output plot name', default='edge_cuts_track_efficiency.pdf')
+    add_arg('--workers', type=int, help='workers', default=1)
+    add_arg('--fraction', type=float, help='matched track must have a fraction of hits in the true track', default=0.8)
+    add_arg('--nodup', action='store_true', help='remove duplicate hits')
+
+    args = parser.parse_args()
+    config_dir = args.config
+    outname = args.outname
+    n_workers = args.workers
+    matching_cut = args.fraction
+
+    config = load_yaml(config_dir)
+    evt_dir = config['track_ml']['dir']
+    evtids = config['doublets_from_cuts']['evtid']
+    if evtids is str:
+        evtids = list_from_str(config['doublets_from_cuts']['evtid'])
+    else:
+        evtids = [evtids]
+
+    with mp.Pool(processes=n_workers) as pool:
+        pp_func = partial(track_eff_of_edge_selected, config_name=config_dir, matching_cut=matching_cut, remove_duplicated_hits=args.nodup)
+        all_evts_results = pool.map(pp_func, evtids)
+
+        # make efficiency plot
+        pT_bins = [
+            0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0,
+            1.2, 1.4, 1.6, 2, 3, 4, 5, 6, 7]
+        hist_configs = {
+                'bins': pT_bins,
+                'histtype': 'step',
+                'lw': 2,
+                'log': True,
+        }
+        xlabel = '$p_T$ [GeV]'
+        tot = [m for x in all_evts_results for m in x[0]]
+        sel = [m for x in all_evts_results for m in x[1]]
+        plot_ratio(
+            tot, sel, "true tracks", 'selected tracks', 
+            xlabel=xlabel,
+            title='Selection Efficiency as a function of pT',
+            outname=outname, **hist_configs)

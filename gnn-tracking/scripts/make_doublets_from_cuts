@@ -1,0 +1,116 @@
+#!/usr/bin/env python
+"""
+Data preparation script for GNN tracking.
+Process the dataset and save doublets to disk.
+"""
+
+# System
+import os
+import argparse
+import multiprocessing as mp
+from functools import partial
+
+# Externals
+import numpy as np
+import pandas as pd
+
+
+from heptrkx import load_yaml, list_from_str
+
+from heptrkx.studies import eff_purity_of_edge_selection
+from heptrkx.doublet import CutBasedSegments
+
+def process(evtid, config_dir, remove_duplicated_hits=False, verbose=True):
+    """
+    Produce doublets from hits only from the specified layers
+    using the cuts on phi slope and z0.
+    Outputs are the pair indexes in HDF5 format.
+    Efficiency and Purity are the attributes of the dataset.
+    """
+    config = load_yaml(config_dir)
+    evt_dir = config['track_ml']['dir']
+    layers = config['doublets_from_cuts']['layers']
+    phi_slope_max = config['doublets_from_cuts']['phi_slope_max']
+    z0_max = config['doublets_from_cuts']['z0_max']
+    min_hits = config['doublets_from_cuts']['min_hits']
+    outdir = os.path.join(config['doublets_from_cuts']['selected'], 'evt{}'.format(evtid))
+
+    eff_purity_of_edge_selection(evtid, evt_dir,
+                                  phi_slope_max, z0_max, layers, min_hits,
+                                  verbose=verbose,
+                                  outdir=outdir,
+                                  remove_duplicated_hits=remove_duplicated_hits,
+                                  call_back=False
+                                 )
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='make doublets using cut-based methods')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+    add_arg('--workers', type=int, help='workers', default=1)
+    add_arg('--mpi', action='store_true', help='use MPI')
+    add_arg('--noduplicate', action='store_true', help='remove duplicate hits')
+    add_arg('-q', '--quiet', action='store_true', help='quiet')
+
+    args = parser.parse_args()
+    config_dir = args.config
+    n_workers = args.workers
+    use_mpi = args.mpi
+    no_dup = args.noduplicate
+    verbose = not args.quiet
+
+    segment_maker = CutBasedSegments()
+    segment_maker.set_verbose(verbose)
+
+    segment_maker.setup_from_config(config_dir)
+
+    if use_mpi:
+        try:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            size = comm.Get_size()
+            rank = comm.Get_rank()
+            print("World size:", size, ", rank:", rank)
+        except ImportError:
+            rank = 0
+            size = 1
+    else:
+        rank = 0
+        size =1
+
+
+    if rank == 0:
+        config = load_yaml(config_dir)
+        mk_cfg = config['doublets_from_cuts']
+        evtids = mk_cfg['evtid']
+        if type(evtids) is str:
+            evtids = list_from_str(evtids)
+        else:
+            evtids = [evtids]
+
+        print("[{}] Total {} events.".format(rank, len(evtids)))
+        # check if results are already there
+        evtids = [x for x in evtids if not segment_maker.is_exist(x)]
+        print("[{}] {} Events Left.".format(rank, len(evtids)))
+        ## split evtids based on the world-size
+        evtids = [x.tolist() for x in np.array_split(evtids, size)]
+    else:
+        evtids = None
+
+    if use_mpi:
+        comm.Barrier()
+        evtids = comm.scatter(evtids, root=0)
+    else:
+        evtids = evtids[0]
+
+    import multiprocessing as mp
+    from functools import partial
+
+    print("rank({}) {} workers deal with {} events.".format(rank, n_workers, len(evtids)))
+
+    if n_workers > 1:
+        with  mp.Pool(processes=n_workers) as pool:
+            pool.map(segment_maker, evtids)
+    else:
+        for evtid in evtids:
+            segment_maker(evtid)

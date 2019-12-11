@@ -1,0 +1,4 @@
+base_dir: /global/cscratch1/sd/xju/heptrkx/codalab/outputs/seed_studies
+All: all_old_features
+Cluster: cluster_old_features
+Location: location_old_features

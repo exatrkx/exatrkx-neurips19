@@ -1,0 +1,69 @@
+#!/usr/bin/env python
+"""
+"""
+
+import numpy as np
+import pandas as pd
+from bisect import bisect
+import matplotlib.pyplot as plt
+
+from heptrkx.preprocess import utils_mldata
+
+def get_data(file_name):
+    with pd.HDFStore(file_name) as store:
+        return store.get('data')
+
+def track_parameters(DF):
+    x = np.array([0, DF['x_in'], DF['x_out']])
+    y = np.array([0, DF['y_in'], DF['y_out']])
+    z = np.array([0, DF['z_in'], DF['z_out']])
+    # [d0, z0, phi, eta, pT*sign]
+    results = utils_mldata.get_track_parameters(x, y, z)
+
+    # return pT, eta, phi
+    return pd.Series([abs(results[4]), results[3]], index=['trk_pT', 'trk_eta'])
+
+if __name__ == "__main__":
+    import os
+    import argparse
+    import yaml
+    import time
+    from tqdm import tqdm
+    from sklearn.metrics import log_loss
+    from functools import partial
+    import multiprocessing as mp
+
+    from heptrkx import load_yaml
+
+    parser = argparse.ArgumentParser(description='For a given efficiency (98%) compare the purity resuling from each NN model')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='directories of NN-evaluated events')
+    add_arg('evtid', type=int, help='event id')
+    add_arg('pairid', type=int, help='pair id')
+    add_arg('outdir', type=str, default='compareSeedNN', help='directory for output plots')
+
+    args = parser.parse_args()
+    config = load_yaml(args.config)
+    outdir = args.outdir
+
+    evtid = args.evtid
+    pair_name = "pair{:03d}.h5".format(args.pairid)
+    file_name = 'evt{}/{}'.format(evtid, pair_name)
+
+    base_dir = config['base_dir']
+    f_all = os.path.join(base_dir, config['All'], file_name)
+    df_all = get_data(f_all)
+
+    now = time.time()
+
+
+    all_pt_eta = [track_parameters(x[1]) for x in df_all.iterrows()]
+    #n_workers = 8
+    #with mp.Pool(processes=n_workers) as pool:
+    #    all_pt_eta = pool.map(track_parameters, [x[1] for x in df_all.iterrows()])
+    #    df_all_pt_eta = pd.DataFrame(all_pt_eta)
+
+    print("finding tracking parameters takes {:.0f} mins".format((time.time() - now)/60))
+    with pd.HDFStore(os.path.join(outdir, file_name)) as store:
+        store['data'] = df_all_pt_eta
+

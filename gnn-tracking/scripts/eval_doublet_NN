@@ -1,0 +1,13 @@
+#!/usr/bin/env python
+
+if __name__ == "__main__":
+    import argparse
+    import yaml
+    from heptrkx import load_yaml
+    parser = argparse.ArgumentParser(description='Efficiency and Fake rate for pairs selected by NN')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+
+    args = parser.parse_args()
+    config = load_yaml(args.config)
+    print(yaml.dump(config, default_flow_style=False))

@@ -1,0 +1,52 @@
+#!/usr/bin/env python
+"""
+Calculate the fraction of particles that have at least one layer
+in that more than one hit is recorded.
+Only particles at specified _layers_ are considered.
+"""
+import os
+import argparse
+import glob
+import re
+
+import multiprocessing as mp
+from functools import partial
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from heptrkx.studies import fraction_of_duplicated_hits
+from heptrkx.utils import evtids_at_disk, load_yaml
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='plot number of duplicated hits for each track.')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+    add_arg('--workers', type=int, help='workers', default=1)
+    add_arg('--outname', help='output plot name', default='duplicated_hits.pdf')
+
+    args = parser.parse_args()
+    config_dir = args.config
+    n_workers = args.workers
+    outname = args.outname
+
+    config = load_yaml(config_dir)
+    evt_dir = config['track_ml']['dir']
+    evtids = evtids_at_disk(evt_dir)
+    n_events = len(evtids)
+    print("Total events: {}".format(n_events))
+
+    with mp.Pool(processes=n_workers) as pool:
+        pp_func = partial(fraction_of_duplicated_hits, config_name=config_dir)
+        fraction_list = pool.map(pp_func, evtids)
+
+        diff = np.concatenate(fraction_list, axis=None)
+        nbins = 11
+        arr = plt.hist(diff, bins=nbins, range=(-0.5, 10.5), density=True)
+        for i in range(nbins):
+            plt.text(arr[1][i], arr[0][i], str(arr[0][i]))
+
+        plt.xlabel("number of duplicated hits")
+        plt.savefig(outname)

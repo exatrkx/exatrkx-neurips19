@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+from __future__ import print_function
+
+import pandas as pd
+import os
+import sys
+prog = os.path.basename(sys.argv[0])
+
+from graph_nets import utils_np
+import networkx as nx
+
+from heptrkx.postprocess import wrangler, analysis
+from heptrkx.nx_graph import utils_io
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Keras train pairs for each layer-pairs')
+    add_arg = parser.add_argument
+    add_arg('nx_graph', type=str, help='nx graph with edge features representing edge score')
+    add_arg('outname', type=str, help='output name to save track candidates')
+    add_arg('--feature', type=str, help='feature name associated with edges representing edge scores', default='features')
+    add_arg('--fit', action='store_true', help='perform fit')
+
+    args = parser.parse_args()
+    graph_name = args.nx_graph
+    feature_name = args.feature
+    with_fit = args.fit
+    outname = args.outname
+
+    data_dict = utils_io.load_data_dicts(graph_name)
+    graph = utils_np.data_dict_to_networkx(data_dict)
+    graph = nx.DiGraph(graph)
+
+    all_true_tracks = wrangler.get_tracks(graph, feature_name=feature_name, with_fit=with_fit)
+    df = analysis.graphs_to_df(all_true_tracks)
+
+    dirname = os.path.dirname(outname)
+    os.makedirs(dirname, exist_ok=True)
+    with pd.HDFStore(outname) as store:
+        store['data'] = df

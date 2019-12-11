@@ -1,0 +1,112 @@
+#!/usr/bin/env python
+"""Compute **edge** efficiency of cut-based selections.
+Edge efficiency is defined as:
+    \epsilon = n_selected_edges / n_true_edges
+"""
+import os
+import argparse
+
+import multiprocessing as mp
+from functools import partial
+import numpy as np
+
+from heptrkx import load_yaml, select_pair_layers, layer_pairs
+
+from heptrkx.nx_graph.utils_plot import plot_ratio
+from heptrkx.utils import evtids_at_disk
+
+from heptrkx.doublet import CutBasedSegments
+from heptrkx.studies import eff_purity_of_edge_selection
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='Efficiency of edge selections for different layer pairs')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, config/data.yaml')
+    add_arg('outdir', type=str, help='output directory')
+    add_arg('--workers', type=int, help='workers', default=1)
+    add_arg('--nevts', type=int, help='number of events', default=4)
+    add_arg('--min_hits', type=int,
+            help='minimum number of hits associated with the particle', default=3)
+    add_arg('-v', '--verbose', action='store_true', help='enable print out')
+
+    args = parser.parse_args()
+    config_dir = args.config
+    outdir = args.outdir
+    os.makedirs(outdir, exist_ok=True)
+
+    n_workers = args.workers
+    n_evts = args.nevts
+    min_hits = args.min_hits
+    verbose = args.verbose
+
+    segment_maker = CutBasedSegments()
+    segment_maker.set_verbose(verbose)
+
+    segment_maker.setup_from_config(config_dir)
+
+    config = load_yaml(config_dir)
+    evt_dir = config['track_ml']['dir']
+    evtids = evtids_at_disk(segment_maker.evt_dir)
+    n_events = len(evtids)
+    print("Total {} events, and requested to run {} events".format(n_events, n_evts))
+    if n_events > n_evts:
+        evtids = evtids[:n_evts]
+
+    phi_slope_max = config['doublets_from_cuts']['phi_slope_max']
+    z0_max = config['doublets_from_cuts']['z0_max']
+    layers = config['doublets_from_cuts']['layers']
+
+    with mp.Pool(processes=n_workers) as pool:
+        # pp_func = partial(eff_purity_of_edge_selection,
+        #                   evt_dir=evt_dir,
+        #                   phi_slope_max=phi_slope_max,
+        #                   z0_max=z0_max,
+        #                   layers=layers,
+        #                   min_hits=min_hits,
+        #                   verbose=verbose
+        #                  )
+        pp_func = partial(segment_maker, call_back=True)
+        fraction_list = pool.map(pp_func, evtids)
+
+        # make efficiency plots for each layers
+        pT_bins = [
+            0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0,
+            1.2, 1.4, 1.6, 2, 3, 4, 5, 6, 7]
+        hist_configs = {
+                'bins': pT_bins,
+                'histtype': 'step',
+                'lw': 2,
+                'log': True,
+        }
+        xlabel = '$p_T$ [GeV]'
+
+        sel_layer_id = select_pair_layers(layers)
+        for ii, pair_idx in enumerate(sel_layer_id):
+            pairs = layer_pairs[pair_idx]
+
+            tot_list = [x[0][ii] for x in fraction_list]
+            sel_true_list = [x[1][ii] for x in fraction_list]
+            sel_list = [x[2][ii] for x in fraction_list]
+
+            tot = np.concatenate(tot_list, axis=None)
+            sel_true = np.concatenate(sel_true_list, axis=None)
+            sel = np.concatenate(sel_list, axis=None)
+
+            plot_ratio(
+                tot, sel_true, "true segments", "selected segments",
+                xlabel=xlabel,
+                title="pT of segments in layer {} {}".format(*pairs),
+                outname=os.path.join(
+                    outdir, "edge_eff_pair{:03d}.pdf".format(pair_idx)),
+                **hist_configs
+            )
+            plot_ratio(
+                sel, sel_true, "selected segments", "selected true segments",
+                xlabel=xlabel,
+                title="pT of segments in layer {} {}".format(*pairs),
+                outname=os.path.join(
+                    outdir, "edge_purity_pair{:03d}.pdf".format(pair_idx)),
+                **hist_configs
+            )

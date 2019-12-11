@@ -1,0 +1,60 @@
+#!/usr/bin/env python
+
+def load_seg(file_name):
+    with pd.HDFStore(file_name) as store:
+        return store.get('data')
+
+if __name__ == "__main__":
+    import os
+    import argparse
+    import numpy as np
+    import pandas as pd
+
+    parser = argparse.ArgumentParser(description='Keras train pairs for each layer-pairs')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+
+    args = parser.parse_args()
+    config_dir = args.config
+
+    from heptrkx import load_yaml
+    config = load_yaml(config_dir)
+    mk_cfg = config['doublets_for_graph']
+    evtid = mk_cfg['evtid']
+    output_dir = os.path.expandvars(mk_cfg['selected'])
+    selected_pairs_dir = os.path.join(output_dir, 'evt{}'.format(evtid))
+
+    from heptrkx import layer_pairs
+
+    all_segments = []
+
+    selected_pairs_files = [os.path.join(selected_pairs_dir, 'pair{:03d}.h5'.format(x)) for x in range(90)]
+
+    out = ''
+    for ii, file_name in enumerate(selected_pairs_files):
+        if not os.path.exists(file_name):
+            print(file_name)
+            continue
+        try:
+            segment = load_seg(file_name)
+        except KeyError:
+            print(file_name)
+            continue
+
+        df_selected = segment[segment.selected]
+        n_selected = df_selected.shape[0]
+        n_true = segment[segment.true].shape[0]
+        n_true_selected = segment[ (segment.true) & (segment.selected)].shape[0]
+        start, end = layer_pairs[ii]
+        out += "{:2} {:2} {:2} {:10} {:10} {:10} {:10}\n".format(ii, start, end, segment.shape[0], n_true, n_selected, n_true_selected)
+        #out = "{:2} {:2} {:2} {:10} {:10} {:10} {:10}\n".format(ii, start, end, segment.shape[0], n_true, n_selected, n_true_selected)
+        #print(out)
+
+        all_segments.append(segment.shape[0])
+
+    sum_segments = sum(all_segments)
+    print(sum_segments)
+
+    with open("log.segments_evt{}".format(evtid), 'w') as f:
+        f.write(out)
+

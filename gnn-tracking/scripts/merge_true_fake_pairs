@@ -1,0 +1,36 @@
+#!/usr/bin/env python
+"""
+Merge the true pairs constructed from several events,
+and fake pairs from one event,
+shuffle them and writ out to a h5 file for training.
+"""
+
+if __name__ == "__main__":
+    import argparse
+    import time
+
+    import pandas as pd
+    from sklearn.utils import shuffle
+
+    parser = argparse.ArgumentParser(description="merge true and fake pairs")
+    add_arg = parser.add_argument
+    add_arg('file_names', nargs='+', help='file names')
+    add_arg('--outname', help='output file name', default="pairs_for_training.h5")
+
+    args = parser.parse_args()
+    print(args.file_names)
+    print(args.outname)
+    df_inputs = []
+    for file_name in args.file_names:
+        with pd.HDFStore(file_name) as store:
+            df_inputs.append(store['data'])
+
+    now = time.time()
+    df_all = pd.concat(df_inputs, ignore_index=True)
+    time_stop2 = time.time()
+    print("Takes {:.0f} second to merge, now shuffing".format(time_stop2-now))
+
+    df_input = shuffle(df_all, random_state=10)
+    print("Takes {:.0f} second to shuffling".format(time.time() - time_stop2))
+    with pd.HDFStore(args.outname) as store:
+        store['data'] = df_input

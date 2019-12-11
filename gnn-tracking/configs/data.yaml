@@ -1,0 +1,61 @@
+track_ml:
+    dir:      /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/inputs/train_all
+    detector: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/inputs/detector.csv
+
+true_hits:
+    layers: [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
+    dir: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/outputs/true_pairs
+
+doublets_for_training:
+    base_dir: /global/cscratch1/sd/xju/heptrkx/codalab/outputs/pairs
+    # subdirectory of base_dir storing true pairs and all pairs
+    true_pairs: merged_true_pairs # only true pairs
+    all_pairs: all_pairs_moreVars # all pairs, used for training, testing, for Graph
+
+doublet_training:
+    batch_size: 512
+    epochs: 6
+    eff_cut: 0.98
+    model_output_dir: /global/cscratch1/sd/xju/heptrkx/codalab/outputs/trained_models/doublet_location_only
+    #features: ['x_in', 'x_out', 'y_in', 'y_out', 'z_in', 'z_out', 'lx_in', 'lx_out', 'ly_in', 'ly_out', 'lz_in', 'lz_out']
+    features: ['x_in', 'x_out', 'y_in', 'y_out', 'z_in', 'z_out']
+    bkg_from_evtid: 6600
+
+# Not up-to-date! Do not use
+doublets_for_graph: ## input pairs from all_pairs
+    evtid: 1000
+    selected: /global/cscratch1/sd/xju/heptrkx/output_graphs_moreVar2/selected_pairs
+    layers: [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
+    min_hits: 3
+    threshold: /global/cscratch1/sd/xju/heptrkx/trained_models/doublet_moreVar/merged_info.txt
+
+doublets_from_cuts:
+    evtid: "21001-24999"
+    selected: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/output/segments/noDup_from_cuts
+    layers: [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
+    min_hits: 3
+    phi_slope_max: 0.0006
+    z0_max: 100
+
+make_graph:
+    nevts: 1500
+    out_graph: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/output/graphs/Digraph_noEdgeFeatures_Barrel_noDup
+    input_segments: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/output/segments/noDup_from_cuts
+    input_data: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/inputs/train_all
+    layers: [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
+
+segment_training:
+    output_dir: /project/projectdirs/m3443/usr/xju//heptrkx/codalab/models/segments
+    model_name: VARY2
+    prod_name: noEdgeFeaturesOneBarrelGraph_v3
+    log_name: big.log
+    input_type: 'data_dict'
+    parameters:
+        time_lapse:  120 # how often save checkpoint in seconds
+        batch_size: 1
+        iterations: 200000
+        iter_per_job: 20000
+        n_iters: 2
+        learning_rate: 0.001
+        real_weight: 10.0
+        fake_weight: 1.

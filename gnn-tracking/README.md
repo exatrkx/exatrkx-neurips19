@@ -1,0 +1,71 @@
+# Graph Neural Networks for particle track reconstruction
+
+## Setup the environment
+1. Follow the instructions in the top-level [README.md](https://github.com/exatrkx/exatrkx-work/blob/master/README.md)
+
+2. After cloning or downloading the exatrkx repository, cd to the gnn-tracking directory and install the necessary dependencies
+```
+cd gnn-tracking
+pip install -e .
+```
+
+## Example gnn-tracking workflow
+
+Out goal is to find the tracks in one event of the [kaggle trackml challenge](https://www.kaggle.com/c/trackml-particle-identification/data) 100 events [sample dataset](https://drive.google.com/open?id=1SGRIRIMDr1rpuB_m183Nvvx9uLSe8c9f).
+This [detector description
+spreadsheet](https://drive.google.com/open?id=18zdZUXSqhy1KIywYkpw8a81ynNRg-DFF)
+will also be needed. The event
+[blacklist](https://drive.google.com/file/d/16_DsM0Vk1e3UlnjWgH7FLwldiEM3Nu_f/view?usp=sharing)
+is used for trackml scoring purposes and optional.
+
+Let's assume we will run all from the gnn-tracking directory. Let's further assume that you have downloaded all your data to the inputdata subdirectory (possibly a simlink).
+
+1. Create an output directory tree
+```
+mkdir out
+mkdir out/hitgraphs_100
+mkdir out/nxgraphs_100
+mkdir out/segments_100
+```
+2. Preprocess the hits to generate a hitsgraph structure
+
+Check/edit the settings in
+[`configs/prep_big.yaml`](configs/prep_big.yaml). Then run
+
+```
+prepare_hitsgraph configs/prep_big.yaml --n-workers 16
+```
+[`prepare_hitsgraph`](scripts/prepare_hitsgraph) can be found in the `scripts` subdirectory and is accessible from the command line when running in the exatrkx conda environment
+The `prepare_hitsgraph` script generates
+`2*n_phi_section*n_eta_sections` files per event (in compressed npy
+format).
+`eventNNNNNNNN_gSSS_ID.npz` contains the IDs of all the hits in
+the event `NNNNNNNN` section `SSS`.
+`eventNNNNNNNN_gSSS.npz` contains the
+inputs to the GNN. The input [`Graph`](heptrkx/datasets/graph.py) object contains all "reasonable" doublet
+candidates, and it is structured as a `namedtuple (X, Ri, Ro, y)`
+```
+      X contains selected hit features (e.g. 'r', 'phi', 'z') normalized using the relevant feature_scale
+      Ri is a matrix n_hits*n_edges mapping each hit to the "incoming" segment  ending on that hit
+      Ro is a matrix n_hits*n_edges mapping each hit to the "outgoing" segment starting from that hit
+      y is an array of booleans which are true if both hits on a segment were produced by the same particle
+```
+
+3. Convert histgraph to network graph used in graph_nets
+
+Check/edit the job settings in
+[`configs/nxgraph_kaggle.yaml`](configs/nxgraph_kaggle.yaml) . Then run
+
+```
+hits_graph_to_tuple -b configs/nxgraph_kaggle.yaml
+```
+that converts the hitgraph npx files produces during the previous step
+into a networkx graph format used by deepmind's graph_nets library.
+The [`hits_graph_to_tuple`](scripts/hits_graph_to_tuple) script generates
+`2*n_phi_section*n_eta_sections` files per event (in compressed npy
+format).
+`eventNNNNNNNN_gSSSSSSS_INPUT.npz`` contains a graph the input node features
+(e.g position) and edge features (e.g. distance) for the event `NNNNNNNN` section `SSSSSSS`.
+`eventNNNNNNNN_gSSSSSSS_TARGET.npz` contains the expected "solution"
+features for nodes and edges.
+

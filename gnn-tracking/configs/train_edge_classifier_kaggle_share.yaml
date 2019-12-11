@@ -1,0 +1,39 @@
+track_ml:
+    dir:           /project/projectdirs/m3443/usr/xju/heptrkx/trackml/train_all
+    blacklist_dir: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/blacklist
+    detector: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/detectors.csv
+    layers: [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
+
+data:
+    name: hitgraphs
+    input_hitsgraph_dir: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/hitsgraphs_big_000
+    output_nxgraph_dir: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/nxgraphs_big_000
+    log_name: data_process.log
+    n_tasks: 1
+    n_workers: 68
+
+selection:
+    pt_min: 0. # GeV
+    phi_slope_max: 0.0006
+    z0_max: 100
+    n_phi_sections: 8
+    n_eta_sections: 2
+    eta_range: [-5, 5]
+
+make_graph:
+    out_graph: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/nxgraphs_big_000
+
+segment_training:
+    output_dir: /project/projectdirs/m3443/usr/xju/heptrkx/codalab/models/segments
+    model_name: default
+    prod_name: v0_kaggle
+    log_name: big.log
+    parameters:
+        time_lapse:  60 # how often save checkpoint in seconds
+        batch_size: 4
+        iterations: 80000
+        iter_per_job: 80000
+        n_iters: 8
+        learning_rate: 0.001
+        real_weight: 1.0
+        fake_weight: 0.5

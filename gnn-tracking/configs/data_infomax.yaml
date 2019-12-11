@@ -1,0 +1,28 @@
+
+track_ml:
+    dir:      /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/inputs/train_all
+    detector: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/inputs/detector.csv
+
+true_hits:
+    layers: [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
+    dir: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/outputs/true_pairs
+
+make_graph:
+    nevts: 50 
+    out_graph: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/output/graphs/Graph4InfoMax
+    input_segments: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/outputs/true_pairs
+    input_data: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/inputs/train_all
+    layers: [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
+
+segment_training:
+    output_dir: /project/projectdirs/m3443/usr/xju//heptrkx/codalab/models/infomax
+    prod_name: v1
+    log_name: big.log
+    input_type: 'data_dict'
+    parameters:
+        time_lapse:  120 # how often save checkpoint in seconds
+        batch_size: 1
+        iterations: 200000
+        iter_per_job: 20000
+        n_iters: 2
+        learning_rate: 0.001

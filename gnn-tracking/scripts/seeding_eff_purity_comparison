@@ -1,0 +1,196 @@
+#!/usr/bin/env python
+"""
+this script run on the files from `select_pairs`,
+compares the performance with the three different NNs
+that are trained with diffrent inputs.
+"""
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import precision_recall_curve
+from bisect import bisect
+import matplotlib.pyplot as plt
+
+from heptrkx.preprocess import utils_mldata
+
+def get_data(file_name):
+    with pd.HDFStore(file_name) as store:
+        return store.get('data')
+
+def track_parameters(DF):
+    x = np.array([0, DF['x_in'], DF['x_out']])
+    y = np.array([0, DF['y_in'], DF['y_out']])
+    z = np.array([0, DF['z_in'], DF['z_out']])
+    # [d0, z0, phi, eta, pT*sign]
+    results = utils_mldata.get_track_parameters(x, y, z)
+
+    # return pT, eta, phi
+    return pd.Series([abs(results[4]), results[3]], index=['trk_pT', 'trk_eta'])
+
+
+def find_threshold(true_labels, predictions, eff_cut=0.98):
+    y_true = true_labels > 0.5
+    purity, efficiency, thresholds = precision_recall_curve(y_true, predictions)
+    ti = bisect(list(reversed(efficiency.tolist())), eff_cut)
+    ti = len(efficiency) - ti
+    return efficiency[ti], purity[ti], thresholds[ti]
+
+
+def make_plot(input_list, xlabel, columns, out_name, logx=False):
+    array = np.array(input_list)
+    array[:, [1, 2]] = array[:, [2, 1]]
+    df = pd.DataFrame(data=array, columns=columns)
+    fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
+    df.plot.barh(ax=ax, logx=logx)
+    ax.set_xlabel(xlabel, fontsize=16)
+    ax.tick_params(width=2, grid_alpha=0.5, labelsize=14)
+    ax.set_ylabel('$\eta$-$p_T$ bins', fontsize=16)
+    ax.legend(fontsize=16)
+    ax.set_yticklabels(pt_eta_labels)
+    plt.savefig(out_name)
+
+
+if __name__ == "__main__":
+    import os
+    import argparse
+    import yaml
+    import time
+    from tqdm import tqdm
+    from sklearn.metrics import log_loss
+    from functools import partial
+    import multiprocessing as mp
+
+    from heptrkx import load_yaml
+
+    parser = argparse.ArgumentParser(description='For a given efficiency (98%) compare the purity resuling from each NN model')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='directories of NN-evaluated events')
+    add_arg('evtid', type=int, help='event id')
+    add_arg('pairid', type=int, help='pair id')
+    add_arg('outdir', type=str, default='compareSeedNN', help='directory for output plots')
+
+    args = parser.parse_args()
+    config = load_yaml(args.config)
+    outdir = args.outdir
+    if not os.path.exists(outdir):
+            os.makedirs(outdir)
+
+
+    evtid = args.evtid
+    pairid = args.pairid
+    pair_name = "pair{:03d}.h5".format(args.pairid)
+    file_name = 'evt{}/{}'.format(evtid, pair_name)
+
+    base_dir = config['base_dir']
+    f_all = os.path.join(base_dir, config['All'], file_name)
+    f_cluster = os.path.join(base_dir, config['Cluster'], file_name)
+    f_location = os.path.join(base_dir, config['Location'], file_name)
+
+    df_all = get_data(f_all)
+    df_cluster = get_data(f_cluster)
+    df_location = get_data(f_location)
+
+    pred_all = df_all.prediction
+    pred_cluster = df_cluster.prediction
+    pred_location = df_location.prediction
+
+    now = time.time()
+    #df_all_pt_eta = df_all[['x_in', 'x_out', 'y_in', 'y_out', 'z_in', 'z_out']].iloc[0:20000].apply(track_parameters, axis=1)
+
+    #n_workers = 100
+    #with mp.Pool(processes=n_workers) as pool:
+    #    all_pt_eta = pool.map(track_parameters, [x[1] for x in df_all.iterrows()])
+    #    df_all_pt_eta = pd.DataFrame(all_pt_eta)
+    outname = os.path.join(outdir, "all_segments.h5")
+    if os.path.exists(outname):
+        with pd.HDFStore(outname) as store:
+            segments = store['data']
+    else:
+        print(df_all.shape)
+        df_all_pt_eta = df_all[['x_in', 'x_out', 'y_in', 'y_out', 'z_in', 'z_out']].apply(track_parameters, axis=1)
+        print("finding tracking parameters takes {:.0f} mins".format((time.time() - now)/60))
+        df = df_all[['hit_idx_in', 'hit_idx_out', 'hit_id_in', 'hit_id_out', 'true']].assign(
+            pred_all=pred_all, pred_cluster=pred_cluster, pred_location=pred_location)
+        segments = df.assign(avg_pt=np.abs(df_all_pt_eta['trk_pT']), avg_eta=np.abs(df_all_pt_eta['trk_eta']))
+        with pd.HDFStore(outname) as store:
+            store['data'] = segments
+
+    ## start to make some plots
+    pt_range = [0.0, 0.5, 1., 1000]  # GeV
+    eta_range = [0, 1, 1.5, 2.1, 3]
+
+    losses = []
+    efficiencies = []
+    purities = []
+    thresholds = []
+    stats = []
+
+    for ipt in tqdm(range(len(pt_range)-1)):
+        pt_low, pt_hi = pt_range[ipt:ipt+2]
+        for ieta in range(len(eta_range)-1):
+            eta_low, eta_hi = eta_range[ieta:ieta+2]
+            print("Eta: {:4}, {:4}; pT: {:4}, {:4} [GeV]".format(eta_low, eta_hi, pt_low, pt_hi))
+            partial_seg = segments[(segments.avg_pt > pt_low) & (segments.avg_pt < pt_hi) & (segments.avg_eta.abs() > eta_low) & (segments.avg_eta.abs() < eta_hi)]
+
+            n_total = partial_seg.shape[0]
+            n_true = partial_seg[partial_seg.true].shape[0]
+            stats.append([n_total, n_true, n_total-n_true])
+            losses.append([log_loss(partial_seg.true, partial_seg.pred_all),
+                           log_loss(partial_seg.true, partial_seg.pred_cluster),
+                           log_loss(partial_seg.true, partial_seg.pred_location)])
+
+            true_labels = partial_seg.true.values
+            all_prediction = partial_seg.pred_all.values
+            cluster_pred = partial_seg.pred_cluster.values
+            loc_pred = partial_seg.pred_location.values
+            r_all = find_threshold(true_labels, all_prediction)
+            r_cluster = find_threshold(true_labels, cluster_pred)
+            r_loc = find_threshold(true_labels, loc_pred)
+
+            efficiencies.append([r_all[0], r_cluster[0], r_loc[0]])
+            purities.append([r_all[1], r_cluster[1], r_loc[1]])
+            thresholds.append([r_all[2], r_cluster[2], r_loc[2]])
+
+    losses_array = np.array(losses)
+    stats_array = np.array(stats)
+
+    ## make pt-eta bins
+    pt_list = []
+    eta_list = []
+    pt_eta_labels = []
+    for ipt in range(len(pt_range)-1):
+        pt_low, pt_hi = pt_range[ipt:ipt+2]
+        for ieta in range(len(eta_range)-1):
+            eta_low, eta_hi = eta_range[ieta:ieta+2]
+            pt_list.append(ipt)
+            eta_list.append(ieta)
+            pt_eta_labels.append("$\eta$ [{}, {}], $p_T$ [{}, {}] GeV".format(eta_low, eta_hi, pt_low, pt_hi))
+
+    df_losses = pd.DataFrame(pt_list, columns=['pT'])
+    df_losses = df_losses.assign(eta=eta_list, pred_all=losses_array[:, 0], pred_location=losses_array[:, 2], pred_cluster=losses_array[:, 1])
+
+    df_stats = pd.DataFrame(data=stats_array, columns=['n_total', 'n_true', 'n_bkg'])
+
+    # graph for stats
+    fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
+    df_stats.plot.barh(logx=True, ax=ax)
+    ax.set_xlabel('# of segments', fontsize=16)
+    ax.set_yticklabels(pt_eta_labels)
+    ax.tick_params(width=2, grid_alpha=0.5, labelsize=14)
+    ax.set_ylabel('$\eta$-$p_T$ bins', fontsize=16)
+    ax.legend(fontsize=16)
+    plt.savefig(os.path.join(outdir, "evt{}_pair{:03d}_stats.pdf".format(evtid, pairid)))
+
+
+    columns_list =['All', 'Location Only', 'Cluster Only']
+    make_plot(losses, "Log Loss", columns=columns_list,
+              out_name=os.path.join(outdir, "evt{}_pair{:03d}_losses.pdf".format(evtid, pairid)))
+
+    make_plot(efficiencies, "Efficiency", columns=columns_list,
+              out_name=os.path.join(outdir, "evt{}_pair{:03d}_efficiency.pdf".format(evtid, pairid)))
+
+    make_plot(purities, "Purity", columns=columns_list,
+              out_name=os.path.join(outdir, "evt{}_pair{:03d}_purity.pdf".format(evtid, pairid)))
+
+    make_plot(thresholds, "Threshold", columns=columns_list,
+              out_name=os.path.join(outdir, "evt{}_pair{:03d}_threshold.pdf".format(evtid, pairid)))

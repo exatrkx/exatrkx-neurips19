@@ -1,0 +1,9 @@
+data:
+    name: hitgraphs
+    input_hitsgraph_dir:  out/hitgraphs_100
+    output_nxgraph_dir: out/nxgraphs_100
+    input_evt_dir: inputdata/train_100_events
+    #blacklist_dir: inputdata/blacklist
+    log_name: data_process.log
+    n_tasks: 1
+    n_workers: 68

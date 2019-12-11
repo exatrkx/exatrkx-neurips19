@@ -1,0 +1,142 @@
+#!/usr/bin/env python
+"""
+create true segments/pairs/doublets by connecting hits in adjacency layers
+"""
+if __name__ == "__main__":
+    import os
+    import glob
+    import re
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description='produce true pairs using MPI')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+    add_arg('nevts', type=int, help='number of events to be processed')
+    add_arg('--n-pids', type=int, help='how many particles should be used',
+            default=-1)
+    add_arg('--no-mpi', action="store_true", help='do not use MPI')
+    add_arg('-w', '--workers', type=int, help='number of workers', default=1)
+
+    args = parser.parse_args()
+
+    from heptrkx import layer_pairs, select_pair_layers, load_yaml
+    config = load_yaml(args.config)
+
+    data_dir = os.path.expandvars(config['track_ml']['dir'])
+    det_dir  = os.path.expandvars(config['track_ml']['detector'])
+    base_output_dir = os.path.expandvars(config['true_hits']['dir'])
+
+    if 'layers' in config:
+        layers = config['layers']
+    else:
+        layers = config['true_hits']['layers']
+
+    sel_layer_id = select_pair_layers(layers)
+
+    n_pids = args.n_pids
+    no_mpi = args.no_mpi
+    n_workers = args.workers
+    rank = 0
+    size = 1
+    has_mpi = False
+
+    if not no_mpi:
+        try:
+            from mpi4py import MPI
+        except ImportError:
+            print("mpi4py is missing, MPI not used")
+        else:
+            comm = MPI.COMM_WORLD
+            size = comm.Get_size()
+            rank = comm.Get_rank()
+            print("World size:", size, ", rank:", rank)
+            has_mpi = True
+
+    no_mpi = no_mpi or not has_mpi
+
+    from heptrkx.preprocess import utils_mldata
+    import numpy as np
+    import pandas as pd
+    from heptrkx.nx_graph import utils_data
+
+    if rank == 0:
+        all_files = glob.glob(os.path.join(data_dir, '*-hits.csv*'))
+        evt_ids = np.sort([int(re.search('event0000([0-9]*)-hits.csv.gz',
+                                         os.path.basename(x)).group(1))
+                           for x in all_files])
+        n_events = len(evt_ids)
+        print("Total Events:", n_events)
+
+        evt_ids = evt_ids[:args.nevts]
+        print("Events to be processed:", len(evt_ids))
+
+        # remove existing ones
+        all_existing_files = glob.glob(os.path.join(base_output_dir, '*'))
+        existing_evt_ids = set([int(os.path.basename(x)[3:]) for x in all_existing_files
+                                        if len(os.listdir(x)) == len(sel_layer_id)+1
+                                       ])
+        set_evt_ids = set(evt_ids.tolist())
+        evt_ids = np.array(list(set_evt_ids.difference(existing_evt_ids)))
+        print("Left Events:", len(evt_ids))
+
+        evt_ids = [x.tolist() for x in np.array_split(evt_ids, size)]
+
+    else:
+        evt_ids = None
+
+    if no_mpi:
+        evt_ids = evt_ids[0]
+    else:
+        comm.Barrier()
+        evt_ids = comm.scatter(evt_ids, root=0)
+
+    from heptrkx.nx_graph import transformation
+    module_getter = utils_mldata.module_info(det_dir)
+
+    from functools import partial
+    import multiprocessing as mp
+
+    print("rank {} has {} workers".format(rank, n_workers))
+    print("rank {} deals with {} events".format(rank, len(evt_ids)))
+
+    for evtid in evt_ids:
+        output_dir = os.path.join(base_output_dir, 'evt{}'.format(evtid))
+        if os.path.exists(output_dir) and len(os.listdir(output_dir)) == len(sel_layer_id)+1:
+            continue
+        os.makedirs(output_dir, exist_ok=True)
+        hits, particles, truth, cells = utils_mldata.read(data_dir, evtid)
+        print(particles.columns)
+
+        reco_pids = utils_mldata.reconstructable_pids(particles, truth)
+
+        # noise included!
+        hh = utils_data.merge_truth_info_to_hits(hits, particles, truth)
+        unique_pids = np.unique(hh['particle_id'])
+        print("Event", evtid, "Number of particles:", unique_pids.shape, reco_pids.shape)
+        hh = hh[hh.layer.isin(layers)]
+        if n_pids > 0:
+            selected_pids = np.random.choice(unique_pids, size=n_pids)
+            selected_hits = hh[hh.particle_id.isin(selected_pids)].assign(evtid=evtid)
+        else:
+            selected_hits = hh.assign(evtid=evtid)
+
+        hits_outname = os.path.join(output_dir, "event{:09d}-hits.h5".format(evtid))
+        if not os.path.exists(hits_outname):
+            with pd.HDFStore(hits_outname, 'w') as store:
+                store['data'] = selected_hits
+
+
+        pp_layers_info = [(layer_pairs[ii], ii) for ii in sel_layer_id]
+        only_true = True
+
+        if n_workers > 1:
+            with mp.Pool(processes=n_workers) as pool:
+                pp_func=partial(utils_mldata.save_segments,
+                                selected_hits_angle=selected_hits,
+                                output_pairs_dir=output_dir,
+                                only_true=only_true)
+                pool.map(pp_func, pp_layers_info)
+        else:
+            for layers_info in pp_layers_info:
+                utils_mldata.save_segments(layers_info, selected_hits, output_dir, only_true)

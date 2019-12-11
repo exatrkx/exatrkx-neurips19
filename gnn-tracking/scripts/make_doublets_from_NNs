@@ -1,0 +1,108 @@
+#!/usr/bin/env python
+"""
+Use **make_pairs_for_training_segments** to make all pairs for the event,
+then use **select_pairs** to select promising pairs (can run on GPU)
+*  srun -n 10 make_doublets_from_NNs configs/data_5000evts.yaml
+"""
+import numpy as np
+import pandas as pd
+from heptrkx import load_yaml, list_from_str
+import subprocess
+import sys
+import os
+prog = os.path.basename(sys.argv[0])
+
+def process(evtid, config_dir):
+    config = load_yaml(config_dir)
+
+    mk_cfg = config['doublets_for_graph']
+    threshold_file = os.path.expandvars(mk_cfg['threshold'])
+    layers = mk_cfg['layers']
+
+    df_threshold = pd.read_csv(threshold_file, sep=' ', header=None,
+                               names=["idx", "in", "out", "cut", "eff", "purity", "n_true", "n_fake"])
+
+    cmd_raw_pairs = ['make_pairs_for_training_segments', config_dir, str(evtid), '-q']
+    print(cmd_raw_pairs)
+    ck_code = subprocess.call(cmd_raw_pairs)
+    if ck_code != 0:
+        print("In [{}] make_pairs_for_training_segments failed".format(prog))
+        return
+
+    from heptrkx import layer_pairs, select_pair_layers
+    sel_layer_id = select_pair_layers(layers)
+
+    for ii in sel_layer_id:
+        layer_pair = layer_pairs[ii]
+        try:
+            cmd_sel_pairs =['select_pairs', config_dir, str(ii),
+                            str(df_threshold[df_threshold.idx == ii]['cut'].values[0]),
+                           str(evtid), '-q']
+        except IndexError:
+            print("pair {}-{}-{} is missing MODEL".format(ii, *layer_pair))
+        ck_code = subprocess.call(cmd_sel_pairs)
+
+
+if __name__ == "__main__":
+    import os
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Keras train pairs for each layer-pairs')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+    add_arg('--workers', type=int, help='workers', default=1)
+    add_arg('--mpi', action='store_true', help='use MPI')
+
+    args = parser.parse_args()
+    config_dir = args.config
+    n_workers = args.workers
+    use_mpi = args.mpi
+
+    if use_mpi:
+        try:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            size = comm.Get_size()
+            rank = comm.Get_rank()
+            print("World size:", size, ", rank:", rank)
+        except ImportError:
+            rank = 0
+            size = 1
+    else:
+        rank = 0
+        size =1
+
+
+    if rank == 0:
+        assert(os.path.exists(config_dir))
+        config = load_yaml(config_dir)
+
+        mk_cfg = config['doublets_for_graph']
+        evtids = mk_cfg['evtid']
+        output_dir = os.path.expandvars(mk_cfg['selected'])
+        os.makedirs(output_dir, exist_ok=True)
+        if type(evtids) is str:
+            evtids = list_from_str(evtids)
+        else:
+            evtids = [evtids]
+
+        ## split evtids based on the world-size
+        evtids = [x.tolist() for x in np.array_split(evtids, size)]
+    else:
+        evtids = None
+
+    if use_mpi:
+        comm.Barrier()
+        evtids = comm.scatter(evtids, root=0)
+    else:
+        evtids = evtids[0]
+
+    import multiprocessing as mp
+    from functools import partial
+
+    print("rank({}) {} workers:".format(rank, n_workers))
+    print("rank({}) {} events:".format(rank, len(evtids)))
+
+    with  mp.Pool(processes=n_workers) as pool:
+        pp_func = partial(process, config_dir=config_dir)
+        pool.map(pp_func, evtids)

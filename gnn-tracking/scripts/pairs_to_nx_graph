@@ -1,0 +1,126 @@
+#!/usr/bin/env python
+
+import numpy as np
+import pandas as pd
+
+from trackml.dataset import load_event
+import networkx as nx
+
+import os
+import re
+
+from nx_graph.prepare import get_networkx_saver
+
+from nx_graph import prepare
+from nx_graph import converters
+from nx_graph import utils_io
+from nx_graph import utils_data
+from postprocess import utils_fit
+from preprocess import utils_mldata
+
+import multiprocessing as mp
+from functools import partial
+
+
+def process_event(evt_id, pairs_input_dir, output_dir, n_phi_sections):
+    print(os.getppid(),"-->", evt_id)
+
+    # full event info
+    evt_dir = config['input_track_events']
+
+    hits, particles, truth, cells = utils_mldata.read(evt_dir, evt_id)
+
+    hits = utils_data.merge_truth_info_to_hits(hits, particles, truth)
+
+
+    # select pairs in barrel and from consecutive layers
+    barrel_layers = [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
+    barrel_hits = hits[hits['layer'].isin(barrel_layers)]
+
+    # select particles whose track is fully contained in barrel
+    ss = hits.groupby('particle_id')[['layer']].apply(lambda x: np.all(x.isin(barrel_layers)))
+    all_barrel_particles = ss[ss].index
+    full_trks_in_barrel = hits[hits['particle_id'].isin(all_barrel_particles)]
+
+    # split hits into different sections
+    #n_phi_sections = 4
+    n_eta_sections = 6
+    phi_range = (-np.pi, np.pi)
+    eta_range = (-5, 5)
+    phi_edges = np.linspace(*phi_range, num=n_phi_sections+1)
+    #eta_edges = np.linspace(*eta_range, num=n_eta_sections+1)
+    eta_edges = [-5, -0.75, -0.35, 0, 0.35, 0.75, 5]
+
+    ihit = full_trks_in_barrel
+    hits_sections = []
+    feature_scale = np.array([1000., np.pi / n_phi_sections, 1000.])
+
+    for i, (phi_min,phi_max) in enumerate(utils_fit.pairwise(phi_edges)):
+        phi_hits = ihit[(ihit.phi > phi_min) & (ihit.phi < phi_max)]
+        centered_phi = (phi_hits.phi - (phi_min + phi_max) / 2.)/feature_scale[1]
+
+        phi_hits = phi_hits.assign(phi=centered_phi, phi_section=i)
+        for j, (eta_min, eta_max) in enumerate(utils_fit.pairwise(eta_edges)):
+            sec_hits = phi_hits[(phi_hits.eta > eta_min) & (phi_hits.eta < eta_max)]
+            sec_hits = sec_hits.assign(
+                r=sec_hits['r']/feature_scale[0],
+                z=sec_hits['z']/feature_scale[2])
+            hits_sections.append(sec_hits)
+
+    # reads pairs and write them into graphs
+    pairs = utils_io.read_pairs_input(os.path.join(pairs_input_dir, 'pairs_{}'.format(evt_id)))
+    all_edges = utils_data.pairs_to_df(pairs, hits)
+
+    # create a graph saver
+    saver = get_networkx_saver(output_dir)
+    for isec, hit_in_section in enumerate(hits_sections):
+        G = utils_data.pairs_to_nx(all_edges, hit_in_section, use_digraph=True, bidirection=False)
+        G.graph['sec_info'] = isec
+        # save hitIDs
+        ID = [G.node[i]['hit_id'] for i in G.nodes()]
+        filename_ID = os.path.join(output_dir, "event{:09d}_g{:03d}_ID.npz".format(evt_id, isec))
+        np.savez(filename_ID, ID=ID)
+        saver(evt_id, isec, G)
+
+
+if __name__ == "__main__":
+    import os
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Convert pairs to nx-graphs')
+    add_arg = parser.add_argument
+    add_arg('config',  nargs='?', default='configs/pairs_to_nx.yaml')
+    args = parser.parse_args()
+
+    from heptrkx import load_yaml
+
+    config = load_yaml(args.config)
+    pairs_input_dir = config['input_pairs']
+    output_dir = config['output_graphs']
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    import re
+    import glob
+    evt_ids = sorted([int(re.search('pairs_([0-9]*)', os.path.basename(x)).group(1))
+               for x in glob.glob(os.path.join(pairs_input_dir, 'pairs_*'))])
+
+    print("events to process:", len(evt_ids))
+
+    import time
+    log_name = os.path.join(output_dir, "timing.log")
+    out_str  = time.strftime('%d %b %Y %H:%M:%S', time.localtime())
+    out_str += '\n'
+    out_str += "# (iteration number), # (event number), T (elapsed seconds)\n"
+    with open(log_name, 'a') as f:
+        f.write(out_str)
+
+    n_workers = config['n_workers']
+    start_job = config['start_jobID']
+    with mp.Pool(processes=n_workers) as pool:
+        process_func = partial(process_event,
+                               pairs_input_dir=pairs_input_dir,
+                               output_dir=output_dir,
+                               n_phi_sections=config['n_phi_sections']
+                              )
+        pool.map(process_func, evt_ids[start_job:start_job+n_workers])

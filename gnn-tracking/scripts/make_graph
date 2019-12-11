@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+from heptrkx import layer_pairs, select_pair_layers, load_yaml
+from heptrkx.nx_graph import utils_data
+from heptrkx.nx_graph import utils_io
+from heptrkx.nx_graph import prepare
+
+prog = os.path.basename(sys.argv[0])
+
+def load_seg(file_name):
+    try:
+        with pd.HDFStore(file_name) as store:
+            df = store.get('data')
+    except KeyError:
+        print("{} is not there".format(file_name))
+        return None
+    return df
+
+
+def process(evtid, pairs_input_dir,
+            layers, output_dir,
+            quiet=True,
+            no_edge_feature=False
+           ):
+    out_name = prepare.get_nx_outname(output_dir, evtid)
+    if os.path.exists(out_name):
+        # print("[{}] find {}".format(prog, out_name))
+        return
+    else:
+        os.makedirs(output_dir, exist_ok=True)
+
+    pairs_input_dir = os.path.join(pairs_input_dir, 'evt{:03d}'.format(evtid))
+
+    # find layer pairs
+    sel_layer_id = select_pair_layers(layers)
+    file_names = [os.path.join(pairs_input_dir, 'pair{:03d}.h5'.format(i))
+                  for i in sel_layer_id]
+    all_segments = [load_seg(file_name) for file_name in file_names if load_seg(file_name) is not None]
+    segments = pd.concat(all_segments, ignore_index=True)
+
+    # get hits
+    hit_file_name = os.path.join(pairs_input_dir, 'event{:09d}-hits.h5'.format(evtid))
+    if not os.path.exists(hit_file_name):
+        print("hit_file_name is not there")
+        return
+
+    try:
+        with pd.HDFStore(hit_file_name) as store:
+            hits = store['data']
+    except KeyError:
+        print("{} does not have data".format(hit_file_name))
+        raise
+
+    if not quiet:
+        print("[{}] processing event {}".format(prog, evtid))
+        print("\t total hits: {}".format(hits.shape[0]))
+        print("\t total edges: {}".format(segments.shape[0]))
+
+    # make a graph and save to disk
+    graph = utils_data.segments_to_nx(
+        hits, segments,
+        sender_hitid_name='hit_id_in',
+        receiver_hitid_name='hit_id_out',
+        solution_name='true', use_digraph=True, bidirection=args.bidirection
+    )
+
+    prepare.save_nx(graph, output_dir, evtid, no_edge_feature=no_edge_feature)
+    #utils_io.save_nx_to_hdf5(graph, out_name)
+
+
+if __name__ == "__main__":
+    import os
+    import argparse
+    import glob
+
+    parser = argparse.ArgumentParser(description='Keras train pairs for each layer-pairs')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+    add_arg('-w', '--workers', type=int, help='number of threads', default=1)
+    add_arg('-b', '--bidirection', action='store_true', help='use two-directions in graph')
+    add_arg('--no_edge_feature', action='store_true', help='no edge features')
+    add_arg('--quiet', action='store_true', help='in a quiet mode')
+
+    args = parser.parse_args()
+    config_dir = args.config
+    n_workers = args.workers
+    quiet = args.quiet
+    no_edge_feature = args.no_edge_feature
+
+    config = load_yaml(config_dir)
+    pairs_selected_dir = os.path.expandvars(config['make_graph']['input_segments'])
+    layers = config['make_graph']['layers']
+    sel_layer_id = select_pair_layers(layers)
+    output_dir = config['make_graph']['out_graph']
+
+    ## find event IDs
+    evtids = []
+    for evt_dir_name in glob.glob(os.path.join(pairs_selected_dir, 'evt*')):
+        n_pairs = len(glob.glob(os.path.join(evt_dir_name, 'pair*.h5')))
+        if n_pairs == len(sel_layer_id):
+            evtid = int(os.path.basename(evt_dir_name)[3:])
+            evtids.append(evtid)
+
+    if len(evtids) < 1:
+        print("[{}] no selected pairs avaiable".format(prog))
+        exit(0)
+
+    nevts = config['make_graph']['nevts']
+    evtids = evtids[:nevts]
+
+    import multiprocessing as mp
+    from functools import partial
+
+    print("{} workers processing {:,} events".format(n_workers, len(evtids)))
+
+    if n_workers > 1:
+        with  mp.Pool(processes=n_workers) as pool:
+            pp_func = partial(process,
+                              pairs_input_dir=pairs_selected_dir,
+                              layers=layers,
+                              output_dir=output_dir,
+                              quiet=quiet,
+                              no_edge_feature=no_edge_feature
+                             )
+            pool.map(pp_func, evtids)
+    else:
+        for evtid in evtids:
+            process(evtid, pairs_selected_dir, layers, output_dir, quiet, no_edge_feature)

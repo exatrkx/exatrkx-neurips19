@@ -1,0 +1,11 @@
+# tracking dataset
+
+# only use layers that are listed below
+layers: [7, 8]
+
+track_ml:
+    dir: /global/cscratch1/sd/xju/heptrkx/codalab/inputs/train_all
+    detector: /global/cscratch1/sd/xju/heptrkx/codalab/inputs/detector.csv
+
+true_hits:
+    dir: /global/cscratch1/sd/xju/heptrkx/codalab/outputs/true_pairs

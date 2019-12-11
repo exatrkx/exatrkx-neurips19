@@ -1,0 +1,93 @@
+#!/usr/bin/env python
+
+if __name__ == "__main__":
+    import os
+    import sys
+    import argparse
+
+    import numpy as np
+    import pandas as pd
+    from sklearn.preprocessing import StandardScaler
+
+    from heptrkx import load_yaml, keep_finite, layer_pairs_dict
+    from heptrkx.nx_graph import shadow_model
+    from heptrkx.nx_graph.utils_plot import plot_metrics
+
+    parser = argparse.ArgumentParser(description='Keras train pairs for each layer-pairs')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='configs/data.yaml')
+    add_arg('pair_idx', nargs='?', type=int, help='pair idx', default=0)
+    add_arg('cut_on_score', type=float, help='selection criteria')
+    add_arg('evtid', type=int, help='event id')
+    add_arg('-q', '--quiet', action='store_true', help='in quiet mode')
+
+    args = parser.parse_args()
+    prog = os.path.basename(sys.argv[0])
+    quiet = args.quiet
+
+    config = load_yaml(args.config)
+    cfg = config['doublets_for_graph']
+
+    cut = args.cut_on_score
+    pair_idx = args.pair_idx
+    evtid = args.evtid
+    file_name = os.path.join(
+        os.path.expandvars(config['doublets_for_training']['base_dir']),
+        config['doublets_for_training']['all_pairs'],
+        'evt{}'.format(args.evtid),
+        'pair{:03d}.h5'.format(pair_idx))
+    assert(os.path.exists(file_name))
+    try:
+        with pd.HDFStore(file_name) as store:
+            df_input = store.get('data')
+    except KeyError:
+        print("[{}] {} is missing".format(prog, file_name))
+        exit(1)
+
+    output_dir = os.path.join(cfg['selected'], 'evt{}'.format(evtid))
+    train_cfg = config['doublet_training']
+    model_weight_base_dir = os.path.expandvars(train_cfg['model_output_dir'])
+    model_name = train_cfg['model']
+    pair_basename = os.path.basename(file_name).replace('.h5', '.ckpt')
+    model_weight_dir = os.path.join(model_weight_base_dir, 'model{}'.format(pair_basename))
+    features = train_cfg['features']
+    batch_size = train_cfg['batch_size']
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    pairs_base_name = os.path.basename(file_name)
+    outname = os.path.join(output_dir, pairs_base_name)
+    if os.path.exists(outname):
+        if not quiet:
+            print("[{}] {} is there".format(prog, outname))
+        exit(0)
+
+    if not quiet:
+        print("---- select pairs ----")
+        print("model weight:", model_weight_dir)
+        print("Features:", features)
+        print("output:", output_dir)
+        print("input:",  file_name)
+
+
+    model = getattr(shadow_model, model_name)()
+    model.load_weights(model_weight_dir)
+
+    scaler = StandardScaler()
+
+    #df_input = keep_finite(df_input)
+
+    all_inputs = df_input[features].values
+    all_inputs = scaler.fit_transform(all_inputs)
+    prediction = model.predict(all_inputs)
+
+    pair_info = layer_pairs_dict[pair_idx]
+    all_targets = df_input[['true']].values
+    plot_metrics(prediction, all_targets,
+                 outname=os.path.join(output_dir, 'roc{:03d}_{}-{}.png'.format(pair_idx, *pair_info)))
+
+    df_input = df_input.assign(prediction=prediction, selected=(prediction > cut))
+    # df_input = df_input[df_input.selected | df_input.true]
+
+    with pd.HDFStore(outname) as store:
+        store['data'] = df_input

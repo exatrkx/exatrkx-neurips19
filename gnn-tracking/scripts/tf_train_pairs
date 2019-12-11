@@ -1,0 +1,196 @@
+#!/usr/bin/env python
+"""
+Use models defined at heptrkx.nx_graph.shadow_model
+to classify doublets/pairs.
+"""
+
+
+if __name__ == "__main__":
+    import os
+    import argparse
+
+    import pandas as pd
+    import numpy as np
+    import time
+
+    from bisect import bisect
+    import tensorflow as tf
+    from tensorflow import keras
+
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import precision_recall_curve
+
+    from heptrkx.nx_graph import shadow_model
+    from heptrkx import keep_finite, load_yaml, layer_pairs
+    from heptrkx.nx_graph.utils_plot import plot_metrics
+
+
+    parser = argparse.ArgumentParser(description='Keras train pairs for each layer-pairs')
+    add_arg = parser.add_argument
+    add_arg('config', nargs='?', default='configs/data.yaml')
+    add_arg('pair_idx', nargs='?', type=int, default=0)
+    add_arg('--resume-train',  action='store_true')
+    add_arg('--in-eval', action='store_true')
+    add_arg('--input', default=None, help="training inputs")
+
+
+    args = parser.parse_args()
+
+    config = load_yaml(args.config)
+    train_cfg = config['doublet_training']
+
+    batch_size = train_cfg['batch_size']
+    epochs = train_cfg['epochs']
+    output_dir = train_cfg['model_output_dir']
+    pair_idx = args.pair_idx
+    model_name = train_cfg['model']
+
+    if args.input:
+        file_name = args.input
+        true_file = None
+    else:
+        file_name = os.path.join(
+            config['doublets_for_training']['base_dir'],
+            config['doublets_for_training']['all_pairs'],
+            'evt{}'.format(train_cfg['bkg_from_evtid']),
+            'pair{:03d}.h5'.format(pair_idx))
+        true_file = os.path.join(
+            config['doublets_for_training']['base_dir'],
+            config['doublets_for_training']['true_pairs'],
+            'training',
+            'pair{:03d}.h5'.format(pair_idx))
+        print("True Files: {}".format(true_file))
+        if not os.path.exists(true_file):
+            true_file = None
+            print("No additional True Files")
+
+    print("Training File Name: {}".format(file_name))
+
+    ## save checkpoints
+    checkpoint_path = os.path.join(output_dir, "modelpair{:03d}.ckpt".format(pair_idx))
+    checkpoint_dir = os.path.dirname(checkpoint_path)
+
+    layer_info = dict([(ii, layer_pair) for ii, layer_pair in enumerate(layer_pairs)])
+    pair_info = layer_info[pair_idx]
+
+    outname = os.path.join(output_dir, 'info{:03d}-{}-{}.txt'.format(pair_idx, *pair_info))
+    out_predictions = os.path.join(output_dir, 'test_prediction.h5')
+
+    if os.path.exists(checkpoint_path+".index") and not args.resume_train and os.path.exists(outname) and os.path.exists(out_predictions):
+        print("model is trained and evaluated")
+        exit()
+
+    # same model for everyone
+    model = getattr(shadow_model, model_name)()
+
+    if os.path.exists(checkpoint_path+".index") and (args.resume_train or args.in_eval):
+        print("Resume previous training")
+        model.load_weights(checkpoint_path)
+
+    model.compile(optimizer='adam',
+                  loss='binary_crossentropy',
+                  metrics=['accuracy'])
+
+    print("Model is compiled. Start to read training data")
+    features = train_cfg['features']
+    all_var = features + ['true']
+    with pd.HDFStore(file_name) as store:
+        t1 = time.time()
+        df_input = store['data']
+        t2 = time.time()
+        df_input = df_input[all_var]
+        #df_input = df_input[all_var].astype(np.float64)
+        t3 = time.time()
+        print("Time to read background data: {:.0f} seconds".format(t2-t1))
+        print("Time to convert format: {:.0f} seconds".format(t3-t2))
+
+
+    if true_file:
+        from sklearn.utils import shuffle
+        print("read true pairs")
+        with pd.HDFStore(true_file) as store:
+            now = time.time()
+            df_true = store['data'][all_var].astype(np.float64)
+            time_stop1 = time.time()
+            print("Takes {:.0f} second to read, now merging".format(time_stop1-now))
+            df_input = pd.concat([df_input, df_true], ignore_index=True)
+            time_stop2 = time.time()
+            print("Takes {:.0f} second to merge, now shuffing".format(time_stop2-time_stop1))
+            df_input = shuffle(df_input, random_state=10)
+            print("Total time spend in reading true files: {:.0f} seconds".format(time.time() - now))
+
+    print("ready for training")
+    # df_input = keep_finite(df_input)
+
+    all_inputs  = df_input[features].values
+    all_targets = df_input[['true']].values
+    n_total = all_inputs.shape[0]
+    n_true = np.sum(all_targets)
+    n_fake = n_total - n_true
+    print("All Entries:", n_total)
+    print("True:", n_true)
+    print("Fake:", n_fake)
+
+    n_training = int(n_total*0.8)
+    n_validating = int(n_total*0.1)
+
+    # transform all inputs
+    scaler = StandardScaler()
+    all_inputs_normed = scaler.fit_transform(all_inputs)
+
+    inputs = all_inputs_normed[:n_training, :]
+    targets = all_targets[:n_training, :]
+
+    x_val = all_inputs_normed[n_training:n_training+n_validating, :]
+    y_val = all_targets[n_training:n_training+n_validating, :]
+
+    x_test = all_inputs_normed[n_training+n_validating:, :]
+    y_test = all_targets[n_training+n_validating:, :]
+
+
+
+    if not args.in_eval:
+        early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_acc', min_delta=0.0001)
+        cp_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path,
+                                                         save_weights_only=True,
+                                                         verbose=1)
+
+        history = model.fit(inputs, targets,
+                            epochs=epochs, batch_size=batch_size,
+                            validation_data=(x_val, y_val),
+                            callbacks = [cp_callback, early_stop],
+                            class_weight={0: 1, 1: n_fake/n_true},
+                            verbose=1)
+
+    prediction = model.predict(x_test,
+                               batch_size=batch_size)
+
+    test_inputs = df_input[n_training+n_validating:]
+    test_inputs = test_inputs.assign(prediction=prediction)
+
+
+
+    plot_metrics(prediction, y_test,
+                 outname=os.path.join(output_dir, 'roc{:03d}_{}-{}.pdf'.format(pair_idx, *pair_info)),
+                 off_interactive=True)
+
+    # find a threshold
+    y_true = y_test > 0.5
+    purity, efficiency, thresholds = precision_recall_curve(y_true, prediction)
+    #print(len(purity), len(efficiency), len(thresholds))
+
+    eff_cut = train_cfg['eff_cut']
+    ti = bisect(list(reversed(efficiency.tolist())), eff_cut)
+    ti = len(efficiency) - ti
+    thres = thresholds[ti]
+    out = "{} {} {} {th:.4f} {tp:.4f} {fp:.4f} {true} {fake}\n".format(
+        pair_idx, *pair_info, th=thres, tp=efficiency[ti], fp=purity[ti],
+        true=n_true, fake=n_fake)
+
+    with open(outname, 'a') as f:
+        f.write(out)
+
+
+    # save prediction and test result
+    with pd.HDFStore(out_predictions) as store:
+        store['data'] = test_inputs

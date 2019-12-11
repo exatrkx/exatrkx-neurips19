@@ -1,0 +1,17 @@
+make_graph:
+    out_graph: /global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/outputs/nxgraphs_bigs_001
+
+segment_training:
+    output_dir: /project/projectdirs/m3443/usr/xju/heptrkx/codalab/models/segments
+    model_name: default
+    prod_name: v0_nxgraphs_bigs_001
+    log_name: big.log
+    parameters:
+        time_lapse:  60 # how often save checkpoint in seconds
+        batch_size: 4
+        iterations: 80000
+        iter_per_job: 80000
+        n_iters: 8
+        learning_rate: 0.001
+        real_weight: 1.0
+        fake_weight: 0.5

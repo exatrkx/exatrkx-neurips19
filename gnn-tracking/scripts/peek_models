@@ -1,0 +1,30 @@
+#!/usr/bin/env python
+
+import tensorflow as tf
+import numpy as np
+
+from tensorflow.python import pywrap_tensorflow
+import argparse
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Peek into Tensor Flow model')
+    add_arg = parser.add_argument
+    add_arg('file', type=str, help='TF checkpoint')
+
+    args = parser.parse_args()
+    file_name = args.file
+
+    reader = pywrap_tensorflow.NewCheckpointReader(file_name)
+    var_to_shape_map = reader.get_variable_to_shape_map()
+
+    total_weights = 0
+    total_weights_withAdam = 0
+    for key in sorted(var_to_shape_map):
+        tensor = reader.get_tensor(key)
+        total_weights_withAdam += tensor.size
+        if "Adam" not in key:
+            total_weights += tensor.size
+        print("tensor_name: {}, shape {}".format(key, tensor.size))
+        print(tensor)
+
+    print("Total {} parameters".format(total_weights))

@@ -1,0 +1,236 @@
+#!/usr/bin/env python
+
+import os
+import sys
+prog_name = os.path.basename(sys.argv[0])
+
+if __name__ == "__main__":
+    import argparse
+    import glob
+    import re
+    import time
+
+    import numpy as np
+    import sklearn.metrics
+
+    import tensorflow as tf
+
+    from graph_nets import utils_tf
+    from graph_nets import utils_np
+
+    from heptrkx.nx_graph import utils_train
+    from heptrkx.nx_graph import prepare
+    from heptrkx.nx_graph import get_model
+    from heptrkx.nx_graph import model_infomax as infomax
+    from heptrkx import load_yaml
+
+    parser = argparse.ArgumentParser(description='Train nx-graph with configurations')
+    add_arg = parser.add_argument
+    add_arg('config',  nargs='?', default='configs/data_infomax.yaml')
+
+    args = parser.parse_args()
+
+    all_config = load_yaml(args.config)
+    config = all_config['segment_training']
+
+    # add ops to save and restore all the variables
+    prod_name = config['prod_name']
+    output_dir = os.path.join(config['output_dir'], prod_name)
+    print("[{}] save models at {}".format(prog_name, output_dir))
+    os.makedirs(output_dir, exist_ok=True)
+
+    files = glob.glob(output_dir+"/*.ckpt.meta")
+    last_iteration = 0 if len(files) < 1 else max([
+        int(re.search('checkpoint_([0-9]*).ckpt.meta', os.path.basename(x)).group(1))
+        for x in files
+    ])
+    print("[{}] last iteration: {}".format(prog_name, last_iteration))
+
+    # default 2/3 for training and 1/3 for testing
+    input_nxgraphs_dir = all_config['make_graph']['out_graph']
+    generate_input_target = prepare.inputs_generator(input_nxgraphs_dir, n_train_fraction=0.8)
+
+    config_tr = config['parameters']
+    # How much time between logging and printing the current results.
+    # save checkpoint very 10 mins
+    log_every_seconds       = config_tr['time_lapse']
+    batch_size = n_graphs   = config_tr['batch_size']   # need optimization
+    num_training_iterations = config_tr['iterations']
+    iter_per_job            = 2500 if 'iter_per_job' not in config_tr else config_tr['iter_per_job']
+    num_processing_steps_tr = config_tr['n_iters']      ## level of message-passing
+    print("Maximum iterations per job: {}".format(iter_per_job))
+
+    ## start to build the infomax model
+    tf.reset_default_graph()
+    nn_corruptor = infomax.CorruptionFunction()
+    nn_readout = infomax.ReadoutFunction()
+    nn_dgi = infomax.DeepGraphInfoMax()
+    nn_discriminator = infomax.Discriminator()
+
+
+    input_graphs, target_graphs = generate_input_target(n_graphs)
+    input_ph  = utils_tf.placeholders_from_data_dicts(input_graphs, force_dynamic_num_graphs=True)
+    input_ph_cp = utils_tf.placeholders_from_data_dicts(input_graphs, force_dynamic_num_graphs=True)
+    ## not needed, just put here for now
+    target_ph = utils_tf.placeholders_from_data_dicts(target_graphs, force_dynamic_num_graphs=True)
+
+    # build the InfoMax model
+    corrupt_input_ph = nn_corruptor(input_ph_cp)
+    latent = nn_dgi(input_ph, num_processing_steps_tr)
+    latent_corrupt = nn_dgi(corrupt_input_ph, num_processing_steps_tr)
+    global_summary = nn_readout(input_ph)
+
+    score_true = nn_discriminator(latent, global_summary)
+    score_fake = nn_discriminator(latent_corrupt, global_summary)
+
+    # create a lose
+    min_value = 1e-6
+    loss_op_tr = - tf.log(tf.clip_by_value(score_true.nodes, min_value, 1-min_value))  - tf.log(1 - tf.clip_by_value(score_fake.nodes, min_value, 1-min_value))
+
+
+    # Optimizer, with decaying learning rate
+    global_step = tf.Variable(0, trainable=False)
+    start_learning_rate = config_tr['learning_rate']
+    learning_rate = tf.train.exponential_decay(
+        start_learning_rate, global_step,
+        decay_steps=500,
+        decay_rate=0.97, staircase=True)
+    optimizer = tf.train.AdamOptimizer(learning_rate)
+    step_op = optimizer.minimize(loss_op_tr, global_step=global_step)
+
+    # Lets an iterable of TF graphs be output from a session as NP graphs.
+    # copyed from deepmind's example, not sure needed...
+    # input_ph, target_ph = utils_train.make_all_runnable_in_session(input_ph, target_ph)
+
+    sess = tf.Session()
+
+    saver = tf.train.Saver()
+    ckpt_name = 'checkpoint_{:05d}.ckpt'
+    if last_iteration > 0:
+        print("loading checkpoint:", os.path.join(output_dir, ckpt_name.format(last_iteration)))
+        saver.restore(sess, os.path.join(output_dir, ckpt_name.format(last_iteration)))
+    else:
+        init_ops = tf.global_variables_initializer()
+        # saver must be created before init_ops is run!
+        sess.run(init_ops)
+
+
+
+    out_str  = time.strftime('%d %b %Y %H:%M:%S', time.localtime())
+    out_str += '\n'
+    out_str += "# (iteration number), T (elapsed seconds), Ltr (training loss), Precision, Recall\n"
+    log_name = os.path.join(output_dir, config['log_name'])
+    with open(log_name, 'a') as f:
+        f.write(out_str)
+
+    start_time = time.time()
+    last_log_time = start_time
+
+    ## loop over iterations, each iteration generating a batch of data for training
+    iruns = 0
+    all_run_time = start_time
+    all_data_taking_time = start_time
+
+    print("# (iteration number), TD (get graph), TR (TF run)")
+    for iteration in range(last_iteration, num_training_iterations):
+        if iruns > iter_per_job:
+            print("runs larger than {} iterations per job, stop".format(iter_per_job))
+            break
+        else: iruns += 1
+        last_iteration = iteration
+        data_start_time = time.time()
+
+        # feed_dict = utils_train.create_feed_dict(generate_input_target, batch_size, input_ph, target_ph)
+        inputs, targets = generate_input_target(batch_size,  True)
+        feed_dict = {
+            input_ph: utils_np.data_dicts_to_graphs_tuple(inputs),
+            input_ph_cp: utils_np.data_dicts_to_graphs_tuple(inputs),
+            target_ph: utils_np.data_dicts_to_graphs_tuple(targets)
+        }
+        all_data_taking_time += time.time() - data_start_time
+
+        # timing the run time only
+        run_start_time = time.time()
+        train_values = sess.run({
+            "step": step_op,
+            "loss": loss_op_tr,
+            # "input": input_ph,
+            # "corrupted": corrupt_input_ph,
+            # "latent": latent,
+            # "latent_fake": latent_corrupt,
+            # "global": global_summary,
+            # "score_true": score_true,
+            # "score_fake": score_fake,
+        }, feed_dict=feed_dict)
+        # print("input: ", train_values['input'].nodes.shape)
+        # print("input: ", train_values['input'].nodes)
+        # print("corrupted: ", train_values['corrupted'].nodes)
+        # print("latent: ", train_values['latent'].nodes)
+        # print("latent_fake: ", train_values['latent_fake'].nodes)
+        # print("global: ", train_values['global'].nodes)
+        # print("score true: ", train_values['score_true'].nodes)
+        # print("score fake: ", train_values['score_fake'].nodes)
+        # print("loss: ", train_values['loss'])
+        # print("loss: ", train_values['loss'].shape)
+
+        run_time = time.time() - run_start_time
+        all_run_time += run_time
+
+        the_time = time.time()
+        elapsed_since_last_log = the_time - last_log_time
+
+        if elapsed_since_last_log > log_every_seconds:
+            # save a checkpoint
+            last_log_time = the_time
+            #feed_dict = utils_train.create_feed_dict(generate_input_target,
+            #                             batch_size, input_ph, target_ph, is_trained=False)
+            inputs, targets = generate_input_target(batch_size,  False)
+            input_graphs = utils_np.data_dicts_to_graphs_tuple(inputs)
+            target_graphs = utils_np.data_dicts_to_graphs_tuple(targets)
+            feed_dict = {
+                input_ph: input_graphs,
+                input_ph_cp: input_graphs,
+                target_ph: target_graphs
+            }
+            # print(input_graphs.nodes)
+            # print(target_graphs.nodes)
+
+            test_values = sess.run({
+                "loss": loss_op_tr,
+                # "input": input_ph,
+                # "corrupted": corrupt_input_ph,
+                # "latent": latent,
+                # "latent_fake": latent_corrupt,
+                # "global": global_summary,
+                # "score_true": score_true,
+                # "score_fake": score_fake,
+            }, feed_dict=feed_dict)
+
+            # print("input: ", test_values['input'].nodes)
+            # print("corrupted: ", test_values['corrupted'].nodes)
+            # print("latent: ", test_values['latent'].nodes)
+            # print("latent_fake: ", test_values['latent_fake'].nodes)
+            # print("global: ", test_values['global'].nodes)
+            # print("score true: ", test_values['score_true'].nodes)
+            # print("score fake: ", test_values['score_fake'].nodes)
+            # print("loss: ", test_values['loss'])
+
+            #correct_tr, solved_tr = utils_train.compute_matrics(
+            #    test_values["target"], test_values["outputs"][-1])
+            correct_tr = 0.0
+            solved_tr = 0.0
+            elapsed = time.time() - start_time
+            out_str = "# {:05d}, T {:.1f}, Ltr {:.4f}, Lge {:.4f}, Precision {:.4f}, Recall {:.4f}\n".format(
+                iteration, elapsed, np.sum(train_values["loss"]), np.sum(test_values["loss"]),
+                correct_tr, solved_tr)
+
+            run_cost_time = all_run_time - start_time
+            data_cost_time = all_data_taking_time - start_time
+            print("# {:05d}, TD {:.1f}, TR {:.1f}".format(iteration, data_cost_time, run_cost_time))
+            with open(log_name, 'a') as f:
+                f.write(out_str)
+
+            save_path = saver.save(
+                sess,
+                os.path.join(output_dir, ckpt_name.format(iteration)))
+    sess.close()

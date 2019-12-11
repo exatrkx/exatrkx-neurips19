@@ -1,0 +1,18 @@
+make_graph:
+    out_graph: /global/homes/x/xju/work/heptrkx/trackml/outputs/nxgraphs_big_001
+
+segment_training:
+    output_dir: /global/cscratch1/sd/xju/heptrkx/trained_models/segments
+    model_name: default
+    prod_name: barrel_test0
+    log_name: big.log
+    # input_type: 'data_dict'
+    parameters:
+        time_lapse:  240 # how often save checkpoint in seconds
+        batch_size: 1
+        iterations: 80000
+        iter_per_job: 80000
+        n_iters: 8
+        learning_rate: 0.001
+        real_weight: 1.0
+        fake_weight: 0.5

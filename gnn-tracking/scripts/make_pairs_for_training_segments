@@ -1,0 +1,115 @@
+#!/usr/bin/env python
+
+if __name__ == "__main__":
+    import os
+    import sys
+    import argparse
+    import subprocess
+
+    import numpy as np
+    import pandas as pd
+    import tables
+    from functools import partial
+    import multiprocessing as mp
+
+    from heptrkx import layer_pairs, select_pair_layers, load_yaml
+    from heptrkx.nx_graph import utils_data
+    from heptrkx.preprocess import utils_mldata
+
+    parser = argparse.ArgumentParser(description='make pairs for given evtid')
+    add_arg = parser.add_argument
+    add_arg('config', type=str, help='data configuration, configs/data.yaml')
+    add_arg('evtid', type=int, help='event id')
+    add_arg('--n-pids', type=int, help='how many particles should be used',
+            default=-1)
+    add_arg('--workers', type=int, help='workers', default=1)
+    add_arg('-q', '--quiet', action='store_true', help='quiet mode')
+
+    args = parser.parse_args()
+    prog = os.path.basename(sys.argv[0])
+    n_workers = args.workers
+
+
+    config = load_yaml(args.config)
+    data_dir = config['track_ml']['dir']
+    det_dir  = config['track_ml']['detector']
+    base_dir = config['doublets_for_training']['base_dir']
+    output_dir = os.path.join(base_dir, config['doublets_for_training']['all_pairs'])
+    layers = config['layers']
+
+    evtid = args.evtid
+    n_pids = args.n_pids
+    quiet = args.quiet
+
+    sel_layer_id = select_pair_layers(layers)
+
+    output_pairs_dir = os.path.join(output_dir, 'evt{}'.format(evtid))
+    os.makedirs(output_pairs_dir, exist_ok=True)
+
+    ## remove pairs already produced...
+    missing_layer_id = []
+    for ii in sel_layer_id:
+        file_name = os.path.join(output_pairs_dir, 'pair{:03d}.h5'.format(ii))
+        if os.path.exists(file_name):
+            try:
+                with pd.HDFStore(file_name) as store:
+                    df = store.get('data')
+                if df is not None:
+                    continue
+            except tables.exceptions.HDF5ExtError:
+                if not quiet:
+                    print("{} is not good".format(file_name))
+                # subprocess.call(['rm', file_name])
+            except KeyError:
+                if not quiet:
+                    print("{} does not have 'data'".format(file_name))
+        missing_layer_id.append(ii)
+
+    sel_layer_id = missing_layer_id
+    if len(sel_layer_id) < 1:
+        print("[{}] event {} all layer pairs are there".format(prog, evtid))
+        exit(0)
+
+    pp_layers_info = [(layer_pairs[ii], ii) for ii in sel_layer_id]
+    results = utils_mldata.read(data_dir, evtid)
+    if results is None:
+        print("[{}] cannot find event {}".format(prog, evtid))
+        exit(1)
+    else:
+        hits, particles, truth, cells = results
+
+    reco_pids = utils_mldata.reconstructable_pids(particles, truth)
+
+    # noise included!
+    hh = utils_data.merge_truth_info_to_hits(hits, particles, truth)
+    unique_pids = np.unique(hh['particle_id'])
+    hh = hh[hh.layer.isin(layers)]
+
+    if n_pids > 0:
+        selected_pids = np.random.choice(unique_pids, size=n_pids)
+        selected_hits = hh[hh.particle_id.isin(selected_pids)].assign(evtid=evtid)
+    else:
+        selected_hits = hh.assign(evtid=evtid)
+
+
+    if not quiet:
+        print("---- make pairs for event {} ----".format(evtid))
+        print("{} particles {} reconstructable".format(
+            unique_pids.shape[0],
+            reco_pids.shape[0]))
+        print("\tuses {} Layers.".format(len(layers)))
+        print("\tTotal {} Layer Pairs.".format(len(sel_layer_id)))
+        print("\tuses {} Workers:".format(n_workers))
+
+    module_getter = utils_mldata.module_info(det_dir)
+
+
+    local_angles = utils_mldata.cell_angles(selected_hits, module_getter, cells)
+    selected_hits_angle = selected_hits.merge(local_angles, on='hit_id', how='left')
+
+
+    with mp.Pool(processes=n_workers) as pool:
+        pp_func=partial(utils_mldata.save_segments,
+                        selected_hits_angle=selected_hits_angle,
+                        output_pairs_dir=output_pairs_dir)
+        pool.map(pp_func, pp_layers_info)

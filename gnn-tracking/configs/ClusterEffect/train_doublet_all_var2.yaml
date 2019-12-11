@@ -1,0 +1,17 @@
+# subdirectory of base_dir storing true pairs and all pairs
+doublets_for_training:
+    base_dir: /global/project/projectdirs/atlas/xju/tracking/ClusterEffect/pairs
+    true_pairs: merged_true_pairs
+    all_pairs: all_pairs # all pairs, used for training, testing, for Graph
+
+doublet_training:
+    batch_size: 512
+    epochs: 6
+    eff_cut: 0.98
+    model_output_dir: /global/proje/global/project/projectdirs/atlas/xju/tracking/ClusterEffect/evaluation/doublet_NN_all_old_features
+    model: fully_connected_classifier 
+    features: ['dphi', 'dz', 'dr', 'phi_slope', 'z0', 'deta', 'deta1', 'dphi1']
+    bkg_from_evtid: 21000
+
+doublets_for_graph:
+    selected: /global/project/projectdirs/atlas/xju/tracking/ClusterEffect/evaluation/all_old_features

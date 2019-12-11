@@ -1,0 +1,146 @@
+#!/usr/bin/env python
+from heptrkx import utils
+def read_candidates(file_name):
+    h1 = []
+    h2 = []
+    h3 = []
+    with open(file_name) as f:
+        for iline,line in enumerate(f):
+            if iline > 3:
+                # seed candidates
+                line = line.replace('(', '').replace(')', '').replace(',', '').split()
+                h1.append([float(x) for x in line[0:3]])
+                h2.append([float(x) for x in line[4:7]])
+                h3.append([float(x) for x in line[8:11]])
+                if iline==4:
+                    print(h1, h2, h3)
+            else:
+                # logistic info
+                if iline==0:
+                    n_sp = int(line.split()[-1])
+                elif iline==2:
+                    n_states = int(line.split()[-1])
+                elif iline==1:
+                    n_time = float(line.split()[-1])
+                elif iline==3:
+                    n_seeds = int(line.split()[-1])
+                else:
+                    pass
+    print("{} seeds calculated in {} seconds from {} space points".format(n_seeds, n_time, n_sp))
+    return h1, h2, h3
+
+
+def find_hit_idx(X):
+    return hits[(hits.x==X[0]) & (hits.y==X[1]) & (hits.z==X[2])]['hit_idx'].values[0]
+
+
+def get_ratio(x_vals, y_vals):
+    res = [x/y if y!=0 else 0.0 for x,y in zip(x_vals, y_vals)]
+    return res[1:]
+
+
+if __name__ == "__main__":
+    import argparse
+    from heptrkx import master
+    from heptrkx import pairwise
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    parser = argparse.ArgumentParser(description='calculate seeding efficiency')
+    add_arg = parser.add_argument
+    add_arg('inputs', help="input seeding file")
+    add_arg('evtid', type=int, help="event ID")
+    add_arg('candiate',  help="seeding candidates")
+    add_arg('output',  help="output name")
+    add_arg('-d', '--data',  help="original tracking ML data",
+            default='/global/project/projectdirs/m3443/usr/xju/heptrkx/codalab/inputs/train_all'
+           )
+    add_arg('--no-noise', action='store_true', help='Exclude noise hits')
+
+    args = parser.parse_args()
+    seed_candidates = args.candiate
+    seed_inputs = args.inputs
+    data_input_dir = args.data
+    output = args.output
+    evtid = args.evtid
+    no_noise = args.no_noise
+
+    event = master.Event(data_input_dir, evtid)
+    hits = utils.select_hits(event, no_noise, eta_cut=1.2)
+    aa = hits.groupby(['particle_id'])['layer_id'].apply(lambda x: len(np.unique(x)))
+    total_particles = aa[aa > 2].index
+    total_particles = total_particles[total_particles != 0]
+    n_total_particles = total_particles.shape[0]
+
+    h1, h2, h3 = read_candidates(seed_candidates)
+
+    h1_idx = []
+    h2_idx = []
+    h3_idx = []
+    for p1,p2,p3 in zip(h1, h2, h3):
+        h1_idx.append(find_hit_idx(p1))
+        h2_idx.append(find_hit_idx(p2))
+        h3_idx.append(find_hit_idx(p3))
+
+    df = pd.DataFrame(h1_idx, columns=['h1_idx'])
+    df = df.assign(h2_idx=h2_idx, h3_idx=h3_idx)
+
+    df1 = df.merge(hits, left_on='h1_idx', right_on='hit_idx', how='left')
+    df2 = df.merge(hits, left_on='h2_idx', right_on='hit_idx', how='left')
+    df3 = df.merge(hits, left_on='h3_idx', right_on='hit_idx', how='left')
+
+    df_all = df.assign(p1=df1.particle_id, p2=df2.particle_id, p3=df3.particle_id)
+
+    n_total_seeds = df_all.shape[0]
+    true_seeds = df_all[(df_all.p1 != 0) & (df_all.p1==df_all.p2) & (df_all.p2==df_all.p3)]
+    n_true_seeds = true_seeds.shape[0]
+
+    unique_true_seeds = np.unique(true_seeds.p1)
+    n_unique_true_seeds = unique_true_seeds.shape[0]
+
+    print("Fraction of duplicated seeds: {:.2f}%".format(100 - n_unique_true_seeds*100/n_true_seeds))
+    print("Purity: {:.2f}%".format(n_true_seeds*100./n_total_seeds))
+
+    #total_particles = np.unique(np.concatenate([df_all.p1, df_all.p2, df_all.p3]))
+    #total_good_particles = []
+    #for pp in total_particles:
+    #    matched_hits = np.unique(np.concatenate([df_all[df_all.p1==pp]['h1_idx'], df_all[df_all.p2==pp]['h2_idx'], df_all[df_all.p3==pp]['h3_idx']]))
+    #    if matched_hits.shape[0] > 2:
+    #        total_good_particles.append(pp)
+
+    # total_particles = np.array(total_good_particles)
+    #n_total_particles = total_particles.shape[0]
+    print("Total particles: {}".format(n_total_particles))
+    print("Efficiency: {:.2f}%".format(n_true_seeds*100./n_total_particles))
+
+    df_unique_true_seeds = pd.DataFrame(unique_true_seeds, columns=['particle_id'])
+    df_unique_true_seeds = df_unique_true_seeds.merge(event.hits, on='particle_id', how='left')
+    bins = [-0.1, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.5, 1.9, 2.4, 5]
+    hist_configs = {
+        'bins': bins,
+        'histtype': 'step',
+        'lw': 2,
+        'log': True
+    }
+    df_total_particles = pd.DataFrame(total_particles, columns=['particle_id'])
+    df_total_particles = df_total_particles.merge(event.hits, on='particle_id', how='left')
+
+    fig, ax = plt.subplots(figsize=(8, 8), constrained_layout=True)
+
+    tot_vals, bins, _ = ax.hist(df_total_particles.pt, **hist_configs)
+    sel_vals, bins, _ = ax.hist(df_unique_true_seeds.pt, **hist_configs)
+
+    plt.clf()
+
+
+    ratio = get_ratio(sel_vals, tot_vals)
+    print(ratio)
+    xvals = [0.5*(x[0]+x[1]) for x in pairwise(bins)][1:]
+    line_configs = {'lw': 2}
+    lstype = '-o'
+    plt.plot(xvals, ratio, lstype, **line_configs)
+    for i,j in zip(xvals, ratio):
+        plt.text(i+0.02, j, "{:.2f}".format(j))
+
+    plt.savefig(output)
