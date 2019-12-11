@@ -1,3 +1,3 @@
-#GNN Pattern Recognition for CMS HGCAL
+# GNN Pattern Recognition for CMS HGCAL
 
 Unfortunately the CMS HGCAL detector simulation data is not (yet) in the public domain. In the meanwhile, feel free to inspect the [model](https://github.com/lgray/hgcal_ldrd/blob/wip_trainer_args_and_edge_labelling_network/src/models/EdgeNet2.py) and [training script](https://github.com/lgray/hgcal_ldrd/blob/wip_trainer_args_and_edge_labelling_network/scripts/heptrx_nnconv.py) used for our paper.
