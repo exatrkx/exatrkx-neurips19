@@ -138,5 +138,8 @@ if __name__ == "__main__":
 
     res_pred = analysis.summary_on_prediction(G, good_trks, pred_df)
     res_truth = analysis.summary_on_prediction(G, good_trks, true_df)
+    print("Results of track following step:") 
+    print("Track candidate predictions based on GNN doublet classifier:")
     inference.print_info(res_pred)
+    print("Baseline track candidate predictions based on ground truth:")
     inference.print_info(res_truth)

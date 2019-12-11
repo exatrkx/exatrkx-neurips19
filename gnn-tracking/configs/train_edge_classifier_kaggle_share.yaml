@@ -1,16 +1,16 @@
 track_ml:
-    dir:           /project/projectdirs/m3443/usr/xju/heptrkx/trackml/train_all
-    blacklist_dir: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/blacklist
-    detector: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/detectors.csv
+    dir:           ./inputdata/train_100_events
+#    blacklist_dir: ./inputdata/blacklist
+    detector: ./inputdata/detectors.csv
     layers: [7, 8, 9, 10, 24, 25, 26, 27, 40, 41]
 
 data:
     name: hitgraphs
-    input_hitsgraph_dir: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/hitsgraphs_big_000
-    output_nxgraph_dir: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/nxgraphs_big_000
+    input_hitsgraph_dir: ./out/hitgraphs_100
+    output_nxgraph_dir: ./out/nxgraphs_100
     log_name: data_process.log
     n_tasks: 1
-    n_workers: 68
+    n_workers: 24
 
 selection:
     pt_min: 0. # GeV
@@ -21,10 +21,10 @@ selection:
     eta_range: [-5, 5]
 
 make_graph:
-    out_graph: /project/projectdirs/m3443/usr/xju/heptrkx/trackml/nxgraphs_big_000
+    out_graph: ./out/nxgraphs_100
 
 segment_training:
-    output_dir: /project/projectdirs/m3443/usr/xju/heptrkx/codalab/models/segments
+    output_dir: ./out/segments_100
     model_name: default
     prod_name: v0_kaggle
     log_name: big.log
