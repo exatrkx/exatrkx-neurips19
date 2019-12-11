@@ -13,21 +13,6 @@ conda activate exatrkx
 ```
 conda install nb_conda_kernels
 ```
-3. Jupiterlab is needed to run [Jupyter@NERSC](https://jupyter.nersc.gov). To install it, first add the conda-forge channel to the defaults by editing your ~/.condarc file
-```
-envs_dirs:
-  - ~/.conda/envs
-report_errors: true
-channels:
-  - conda-forge
-  - defaults
-```
-then install jupiterlab from conda-forge
-
-```
-conda install -c conda-forge jupyterlab
-```
-
 ## Running the Exa.TrkX models
 
 Refer to the intructions in the README.md of each subdirectory

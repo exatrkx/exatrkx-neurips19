@@ -18,7 +18,7 @@ will also be needed. The event
 [blacklist](https://drive.google.com/file/d/16_DsM0Vk1e3UlnjWgH7FLwldiEM3Nu_f/view?usp=sharing)
 is used for trackml scoring purposes and optional.
 
-Let's assume we will run all from the gnn-tracking directory. Let's further assume that you have downloaded all your data to the inputdata subdirectory (possibly a simlink).
+Let's assume we will run all from the `gnn-tracking` directory. Let's further assume that you have downloaded all your data to the `inputdata` subdirectory (possibly a simlink).
 
 1. Create an output directory tree
 ```
