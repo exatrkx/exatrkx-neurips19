@@ -11,7 +11,7 @@ conda activate exatrkx
 ```
 2. nb_conda_kernels allows to pick the exatrkx conda kernel from a traditional jupyter notebook. To install it (in your base environment or in the exatrkx environment)
 ```
-conda install nb_conda_kernels
+conda install -c "conda-forge/label/cf201901" nb_conda_kernels
 ```
 ## Running the Exa.TrkX models
 
